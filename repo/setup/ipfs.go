@@ -326,6 +326,12 @@ func configureIPFS(out io.Writer, apiAddr ma.Multiaddr, ipfsPath string, setExtr
 		{"Experimental.Libp2pStreamMounting", "true"},
 	}
 
+	if version.GE(semver.MustParse("0.11.0")) {
+		config = append(config, [][]string{
+			{"Pubsub.Enabled", "true"},
+		}...)
+	}
+
 	if setExtraConfig {
 		// Optional: Helps save us resources.
 		config = append(config, [][]string{
@@ -333,11 +339,18 @@ func configureIPFS(out io.Writer, apiAddr ma.Multiaddr, ipfsPath string, setExtr
 			{"Swarm.ConnMgr.GracePeriod", "\"60s\""},
 		}...)
 
-		if version.GE(semver.MustParse("0.4.19")) {
+		// After gp-ipfs v0.11.0 Swarm.EnableAutoRelay was depecated
+		// use Swarm.RelayClient.Enabled instead
+		if version.GE(semver.MustParse("0.11.0")) {
+			config = append(config, [][]string{
+				{"Swarm.RelayClient.Enabled", "true"},
+			}...)
+		} else if version.GE(semver.MustParse("0.4.19")) {
 			config = append(config, [][]string{
 				{"Swarm.EnableAutoRelay", "true"},
 			}...)
 		}
+
 	}
 
 	for _, args := range config {
@@ -348,11 +361,34 @@ func configureIPFS(out io.Writer, apiAddr ma.Multiaddr, ipfsPath string, setExtr
 }
 
 func startIpfs(out io.Writer, ipfsPath string) (int, error) {
+	outstr, err := exec.Command("ipfs", "version").Output()
+	if err != nil {
+		return -1, err
+	}
+
+	version, err := semver.Parse(
+		strings.Split(strings.TrimSpace(string(outstr)), " ")[2])
+	if err != nil {
+		return -1, err
+	}
+
+	cmd := exec.Command("ipfs", "daemon")
+	cmd.Env = append(cmd.Env, "IPFS_PATH="+ipfsPath)
+
+	// Prior to go-ipfs v0.11.0 pubsub must be enabled on the command line
+	if version.LT(semver.MustParse("0.11.0")) {
+		cmd.Args = append(cmd.Args, "--enable-pubsub-experiment")
+	}
+
+	cmdstr := "-- "
+	for _, env := range cmd.Env {
+		cmdstr += fmt.Sprintf("%s ", env)
+	}
+	cmdstr += fmt.Sprint(cmd)
+	fmt.Fprintf(out, "%s\n", cmdstr)
+
 	// We don't call Wait() on cmd, so the process will survive the
 	// exit of your process and gets reparented to init.
-	fmt.Fprintf(out, "-- IPFS_PATH='%s' ipfs daemon --enable-pubsub-experiment\n", ipfsPath)
-	cmd := exec.Command("ipfs", "daemon", "--enable-pubsub-experiment")
-	cmd.Env = append(cmd.Env, "IPFS_PATH="+ipfsPath)
 	if err := cmd.Start(); err != nil {
 		return -1, err
 	}
